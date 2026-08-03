@@ -1,5 +1,7 @@
 """Tests for manifest diffs."""
 
+import logging
+
 from crypttreesum.diff import diff_manifests, format_diff_report
 from crypttreesum.models import SCHEMA_VERSION, FileRecord, Side
 
@@ -73,3 +75,18 @@ def test_hash_mismatch_and_missing() -> None:
     assert "hash mismatch" in text
     assert "missing in b.jsonl" in text
     assert "DIFF" in text
+
+
+def test_duplicate_identity_keeps_first_and_warns(caplog) -> None:
+    records = [
+        _rec(path="first.txt", sha256="aaa", inode=1),
+        _rec(path="second.txt", sha256="bbb", inode=2),
+    ]
+    with caplog.at_level(logging.WARNING, logger="crypttreesum.diff"):
+        report = diff_manifests(
+            records,
+            [_rec(path="first.txt", sha256="aaa", inode=1)],
+        )
+
+    assert report.ok
+    assert "duplicate identity" in caplog.text

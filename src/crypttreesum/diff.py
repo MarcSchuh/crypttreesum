@@ -55,6 +55,11 @@ def _index_by_identity(
     for record in records:
         key = record.identity_key()
         if key in indexed:
+            _LOG.warning(
+                "duplicate identity %s: keeping first record, ignoring %s",
+                key,
+                record.path,
+            )
             continue
         indexed[key] = record
     return indexed
@@ -66,9 +71,9 @@ def diff_manifests(
 ) -> DiffReport:
     """Diff two manifests.
 
-    Identity is ``(side, logical_path)`` when mapped, otherwise ``(side, path)``
-    for unmatched encrypted metadata. SHA-256 equality is the primary integrity
-    check across sync hosts.
+    Identity is ``(side, entry_type, logical_path)`` when mapped, otherwise
+    ``(side, entry_type, path)`` for unmatched encrypted metadata. SHA-256
+    equality is the primary integrity check across sync hosts.
     """
     _LOG.info(
         "diffing manifests: %d records (a) vs %d records (b)",

@@ -27,7 +27,6 @@ class ScanLimits:
 
     max_depth: int | None = None
     max_files: int | None = None
-    include_directories: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,8 +125,6 @@ def _iter_candidates(
     root: Path,
     side: Side,
     max_depth: int | None,
-    *,
-    include_directories: bool,
 ) -> list[_Candidate]:
     if not root.is_dir():
         msg = f"{side.value} root is not a directory: {root}"
@@ -158,16 +155,15 @@ def _iter_candidates(
         dirnames.sort()
         filenames.sort()
 
-        if include_directories:
-            candidates.extend(
-                _directory_candidates(
-                    current,
-                    root,
-                    side,
-                    dirnames,
-                    dir_depth,
-                ),
-            )
+        candidates.extend(
+            _directory_candidates(
+                current,
+                root,
+                side,
+                dirnames,
+                dir_depth,
+            ),
+        )
 
         # Do not descend into children beyond max_depth.
         if max_depth is not None and dir_depth >= max_depth:
@@ -220,11 +216,7 @@ def _apply_file_limit(
     return limited
 
 
-def _hash_candidate(item: _Candidate, index: int, total: int) -> str | None:
-    if item.entry_type is EntryType.DIRECTORY:
-        _LOG.info("recording %s directory: %s", item.side.value, item.rel_path)
-        return None
-
+def _hash_file(item: _Candidate, index: int, total: int) -> str:
     _LOG.info(
         "hashing [%d/%d] %s: %s (%d bytes)",
         index,
@@ -259,12 +251,30 @@ def _logical_path_for(
     return logical_path
 
 
+def _inode_map(
+    candidates: list[_Candidate],
+) -> dict[tuple[EntryType, int], str]:
+    inode_to_logical: dict[tuple[EntryType, int], str] = {}
+    for item in candidates:
+        if item.side is not Side.DECRYPTED:
+            continue
+        key = (item.entry_type, item.inode)
+        previous = inode_to_logical.get(key)
+        if previous is not None and previous != item.rel_path:
+            _LOG.warning(
+                "duplicate decrypted inode %d (%s): keeping %r, ignoring %r",
+                item.inode,
+                item.entry_type.value,
+                previous,
+                item.rel_path,
+            )
+            continue
+        inode_to_logical[key] = item.rel_path
+    return inode_to_logical
+
+
 def _build_records(candidates: list[_Candidate]) -> list[ManifestRecord]:
-    inode_to_logical: dict[tuple[EntryType, int], str] = {
-        (item.entry_type, item.inode): item.rel_path
-        for item in candidates
-        if item.side is Side.DECRYPTED
-    }
+    inode_to_logical = _inode_map(candidates)
     hash_count = sum(
         1 for candidate in candidates if candidate.entry_type is EntryType.FILE
     )
@@ -280,10 +290,7 @@ def _build_records(candidates: list[_Candidate]) -> list[ManifestRecord]:
         logical_path = _logical_path_for(item, inode_to_logical)
         if item.entry_type is EntryType.FILE:
             hash_index += 1
-            digest = _hash_candidate(item, hash_index, hash_count)
-            if digest is None:  # pragma: no cover - guarded by entry type
-                msg = f"missing digest for file: {item.abs_path}"
-                raise ScanError(msg)
+            digest = _hash_file(item, hash_index, hash_count)
             record: ManifestRecord = FileRecord(
                 schema_version=SCHEMA_VERSION,
                 side=item.side,
@@ -295,7 +302,7 @@ def _build_records(candidates: list[_Candidate]) -> list[ManifestRecord]:
                 sha256=digest,
             )
         else:
-            _hash_candidate(item, hash_index, hash_count)
+            _LOG.info("recording %s directory: %s", item.side.value, item.rel_path)
             record = FolderRecord(
                 schema_version=SCHEMA_VERSION,
                 side=item.side,
@@ -330,26 +337,22 @@ def scan_trees(
         raise ScanError(msg)
 
     _LOG.info(
-        "starting scan encrypted=%s decrypted=%s max_depth=%s max_files=%s "
-        "include_directories=%s",
+        "starting scan encrypted=%s decrypted=%s max_depth=%s max_files=%s",
         encrypted,
         decrypted,
         limits.max_depth,
         limits.max_files,
-        limits.include_directories,
     )
 
     decrypted_candidates = _iter_candidates(
         decrypted,
         Side.DECRYPTED,
         limits.max_depth,
-        include_directories=limits.include_directories,
     )
     encrypted_candidates = _iter_candidates(
         encrypted,
         Side.ENCRYPTED,
         limits.max_depth,
-        include_directories=limits.include_directories,
     )
 
     combined = _apply_file_limit(

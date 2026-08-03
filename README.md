@@ -22,14 +22,17 @@ crypttreesum scan \
   --encrypted ./encrypted \
   --decrypted ./decrypted \
   -o sample.jsonl \
-  --include-directories \
   --max-depth 1 \
   --max-files 50
 ```
 
-`--include-directories` adds directory records to the manifest with
-`entry_type: "directory"`. Directory records have no `sha256` field. The root
-directories themselves are not included.
+Directory records (`entry_type: "directory"`) are always included and have no
+`sha256` field. The root directories themselves are not included.
+`--max-files` limits hashed files only, not directory entries.
+
+**Breaking (1.0.0):** `--include-directories` was removed; directory records are
+always emitted. Manifests from older versions without directory records will
+diff as missing/extra directories against new scans.
 
 ### Diff
 

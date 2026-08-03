@@ -82,11 +82,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Global maximum number of files to hash (testrun)",
     )
-    scan.add_argument(
-        "--include-directories",
-        action="store_true",
-        help="Include directory records without SHA-256 hashes",
-    )
 
     diff = subparsers.add_parser(
         "diff",
@@ -102,7 +97,6 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     limits = ScanLimits(
         max_depth=args.max_depth,
         max_files=args.max_files,
-        include_directories=args.include_directories,
     )
     records = scan_trees(args.encrypted, args.decrypted, limits=limits)
     write_manifest(args.output, records)

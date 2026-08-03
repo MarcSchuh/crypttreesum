@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def test_max_depth_root_only(tmp_path: Path) -> None:
         limits=ScanLimits(max_depth=0),
     )
     paths = [r.path for r in records if r.side is Side.DECRYPTED]
-    assert paths == ["root.txt"]
+    assert paths == ["dir", "root.txt"]
 
 
 def test_max_files_global_deterministic(tmp_path: Path) -> None:
@@ -96,20 +97,15 @@ def test_scan_rejects_missing_root(tmp_path: Path) -> None:
         scan_trees(tmp_path / "missing", tmp_path)
 
 
-def test_directories_are_optional_and_have_no_hash(tmp_path: Path) -> None:
+def test_directories_are_always_included_and_have_no_hash(
+    tmp_path: Path,
+) -> None:
     decrypted = tmp_path / "decrypted"
     encrypted = tmp_path / "encrypted"
     (decrypted / "empty" / "nested").mkdir(parents=True)
     encrypted.mkdir()
 
-    without_directories = scan_trees(encrypted, decrypted)
-    assert without_directories == []
-
-    records = scan_trees(
-        encrypted,
-        decrypted,
-        limits=ScanLimits(include_directories=True),
-    )
+    records = scan_trees(encrypted, decrypted)
     assert [record.path for record in records] == ["empty", "empty/nested"]
     assert all(isinstance(record, FolderRecord) for record in records)
     assert all(record.entry_type is EntryType.DIRECTORY for record in records)
@@ -127,6 +123,28 @@ def test_max_files_does_not_count_directories(tmp_path: Path) -> None:
     records = scan_trees(
         encrypted,
         decrypted,
-        limits=ScanLimits(max_files=1, include_directories=True),
+        limits=ScanLimits(max_files=1),
     )
     assert [record.path for record in records] == ["folder", "folder/a.txt"]
+
+
+def test_duplicate_decrypted_inode_keeps_first_and_warns(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    decrypted = tmp_path / "decrypted"
+    encrypted = tmp_path / "encrypted"
+    decrypted.mkdir()
+    encrypted.mkdir()
+
+    plain = decrypted / "a.txt"
+    plain.write_text("shared", encoding="utf-8")
+    _link_same_inode(plain, decrypted / "b.txt")
+    _link_same_inode(plain, encrypted / "cipher.bin")
+
+    with caplog.at_level(logging.WARNING, logger="crypttreesum.scan"):
+        records = scan_trees(encrypted, decrypted)
+
+    by_side_path = {(r.side, r.path): r for r in records}
+    assert by_side_path[(Side.ENCRYPTED, "cipher.bin")].logical_path == "a.txt"
+    assert "duplicate decrypted inode" in caplog.text
