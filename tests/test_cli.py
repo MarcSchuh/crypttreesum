@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
 from crypttreesum.cli import main
+from crypttreesum.hashutil import sha256_file
 from crypttreesum.manifest import read_manifest
-from crypttreesum.models import EntryType, FolderRecord
+from crypttreesum.models import EntryType, FileRecord, FolderRecord
 
 
 def test_cli_scan_and_diff(tmp_path: Path) -> None:
@@ -132,3 +134,45 @@ def test_cli_scan_includes_directories(tmp_path: Path) -> None:
     assert isinstance(record, FolderRecord)
     assert record.entry_type is EntryType.DIRECTORY
     assert not hasattr(record, "sha256")
+
+
+def test_cli_scan_continues_on_hash_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    decrypted = tmp_path / "decrypted"
+    encrypted = tmp_path / "encrypted"
+    decrypted.mkdir()
+    encrypted.mkdir()
+    (decrypted / "good.txt").write_text("fine", encoding="utf-8")
+    (decrypted / "broken.vob").write_text("boom", encoding="utf-8")
+    output = tmp_path / "manifest.jsonl"
+
+    def fake_sha256(path: Path) -> str:
+        if path.name == "broken.vob":
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        return sha256_file(path)
+
+    monkeypatch.setattr("crypttreesum.scan.sha256_file", fake_sha256)
+
+    assert (
+        main(
+            [
+                "scan",
+                "--encrypted",
+                str(encrypted),
+                "--decrypted",
+                str(decrypted),
+                "-o",
+                str(output),
+            ],
+        )
+        == 0
+    )
+
+    records = {record.path: record for record in read_manifest(output)}
+    assert isinstance(records["broken.vob"], FileRecord)
+    assert records["broken.vob"].sha256 is None
+    assert isinstance(records["good.txt"], FileRecord)
+    assert records["good.txt"].sha256 is not None
+
+    captured = capsys.readouterr()
+    assert "could not be read" in captured.err
+    assert "broken.vob" in captured.err

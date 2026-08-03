@@ -30,6 +30,29 @@ class ScanLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ScanIssue:
+    """An entry the scan could not fully inspect.
+
+    ``operation`` is ``"hash"`` (the entry is still recorded, with
+    ``sha256: null``) or ``"list"``/``"stat"`` (the entry is skipped entirely
+    because it could not be enumerated).
+    """
+
+    side: Side
+    path: Path
+    operation: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScanResult:
+    """Manifest records plus the entries that could not be read."""
+
+    records: list[ManifestRecord]
+    issues: list[ScanIssue]
+
+
+@dataclass(frozen=True, slots=True)
 class _Candidate:
     side: Side
     rel_path: str
@@ -41,21 +64,44 @@ class _Candidate:
     entry_type: EntryType
 
 
-def _candidate_from_path(
+@dataclass(slots=True)
+class _WalkContext:
+    root: Path
+    side: Side
+    issues: list[ScanIssue]
+
+
+def _record_issue(
+    ctx: _WalkContext,
     path: Path,
-    root: Path,
-    side: Side,
+    operation: str,
+    exc: OSError,
+) -> None:
+    _LOG.error("cannot %s %s: %s", operation, path, exc)
+    ctx.issues.append(
+        ScanIssue(
+            side=ctx.side,
+            path=path,
+            operation=operation,
+            message=str(exc),
+        ),
+    )
+
+
+def _candidate_from_path(
+    ctx: _WalkContext,
+    path: Path,
     depth: int,
     entry_type: EntryType,
-) -> _Candidate:
+) -> _Candidate | None:
     try:
         stat = path.stat(follow_symlinks=False)
     except OSError as exc:
-        msg = f"cannot stat {path}: {exc}"
-        raise ScanError(msg) from exc
+        _record_issue(ctx, path, "stat", exc)
+        return None
     return _Candidate(
-        side=side,
-        rel_path=path.relative_to(root).as_posix(),
+        side=ctx.side,
+        rel_path=path.relative_to(ctx.root).as_posix(),
         abs_path=path,
         inode=stat.st_ino,
         size=stat.st_size,
@@ -66,53 +112,56 @@ def _candidate_from_path(
 
 
 def _directory_candidates(
+    ctx: _WalkContext,
     current: Path,
-    root: Path,
-    side: Side,
     dirnames: list[str],
     depth: int,
 ) -> list[_Candidate]:
     candidates: list[_Candidate] = []
     for name in dirnames:
         abs_path = current / name
-        if abs_path.is_symlink():
+        try:
+            is_symlink = abs_path.is_symlink()
+        except OSError as exc:
+            _record_issue(ctx, abs_path, "stat", exc)
+            continue
+        if is_symlink:
             _LOG.debug("skipping symlinked directory: %s", abs_path)
             continue
-        candidates.append(
-            _candidate_from_path(
-                abs_path,
-                root,
-                side,
-                depth,
-                EntryType.DIRECTORY,
-            ),
+        candidate = _candidate_from_path(
+            ctx,
+            abs_path,
+            depth,
+            EntryType.DIRECTORY,
         )
+        if candidate is not None:
+            candidates.append(candidate)
     return candidates
 
 
 def _file_candidates(
+    ctx: _WalkContext,
     current: Path,
-    root: Path,
-    side: Side,
     filenames: list[str],
     depth: int,
 ) -> list[_Candidate]:
     candidates: list[_Candidate] = []
     for name in filenames:
         abs_path = current / name
-        if abs_path.is_symlink() or not abs_path.is_file():
+        try:
+            is_regular = not abs_path.is_symlink() and abs_path.is_file()
+        except OSError as exc:
+            _record_issue(ctx, abs_path, "stat", exc)
+            continue
+        if not is_regular:
             _LOG.debug("skipping non-regular file: %s", abs_path)
             continue
-        candidate = _candidate_from_path(
-            abs_path,
-            root,
-            side,
-            depth,
-            EntryType.FILE,
-        )
+        candidate = _candidate_from_path(ctx, abs_path, depth, EntryType.FILE)
+        if candidate is None:
+            continue
         _LOG.debug(
             "found %s file: %s (inode=%d size=%d)",
-            side.value,
+            ctx.side.value,
             candidate.rel_path,
             candidate.inode,
             candidate.size,
@@ -125,6 +174,7 @@ def _iter_candidates(
     root: Path,
     side: Side,
     max_depth: int | None,
+    issues: list[ScanIssue],
 ) -> list[_Candidate]:
     if not root.is_dir():
         msg = f"{side.value} root is not a directory: {root}"
@@ -132,9 +182,14 @@ def _iter_candidates(
 
     candidates: list[_Candidate] = []
     root = root.resolve()
+    ctx = _WalkContext(root=root, side=side, issues=issues)
     _LOG.info("enumerating %s tree: %s", side.value, root)
 
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    def on_walk_error(exc: OSError) -> None:
+        _record_issue(ctx, Path(exc.filename or root), "list", exc)
+
+    walker = os.walk(root, followlinks=False, onerror=on_walk_error)
+    for dirpath, dirnames, filenames in walker:
         current = Path(dirpath)
         try:
             rel_dir = current.relative_to(root)
@@ -155,23 +210,13 @@ def _iter_candidates(
         dirnames.sort()
         filenames.sort()
 
-        candidates.extend(
-            _directory_candidates(
-                current,
-                root,
-                side,
-                dirnames,
-                dir_depth,
-            ),
-        )
+        candidates.extend(_directory_candidates(ctx, current, dirnames, dir_depth))
 
         # Do not descend into children beyond max_depth.
         if max_depth is not None and dir_depth >= max_depth:
             dirnames.clear()
 
-        candidates.extend(
-            _file_candidates(current, root, side, filenames, dir_depth),
-        )
+        candidates.extend(_file_candidates(ctx, current, filenames, dir_depth))
 
     candidates.sort(key=lambda item: (item.rel_path, item.entry_type.value))
     file_count = sum(
@@ -216,7 +261,13 @@ def _apply_file_limit(
     return limited
 
 
-def _hash_file(item: _Candidate, index: int, total: int) -> str:
+def _hash_file(
+    item: _Candidate,
+    index: int,
+    total: int,
+    issues: list[ScanIssue],
+) -> str | None:
+    """Hash a file, or return ``None`` if its content cannot be read."""
     _LOG.info(
         "hashing [%d/%d] %s: %s (%d bytes)",
         index,
@@ -228,8 +279,16 @@ def _hash_file(item: _Candidate, index: int, total: int) -> str:
     try:
         return sha256_file(item.abs_path)
     except OSError as exc:
-        msg = f"cannot hash {item.abs_path}: {exc}"
-        raise ScanError(msg) from exc
+        _LOG.error("cannot hash %s: %s", item.abs_path, exc)
+        issues.append(
+            ScanIssue(
+                side=item.side,
+                path=item.abs_path,
+                operation="hash",
+                message=str(exc),
+            ),
+        )
+        return None
 
 
 def _logical_path_for(
@@ -273,7 +332,10 @@ def _inode_map(
     return inode_to_logical
 
 
-def _build_records(candidates: list[_Candidate]) -> list[ManifestRecord]:
+def _build_records(
+    candidates: list[_Candidate],
+    issues: list[ScanIssue],
+) -> list[ManifestRecord]:
     inode_to_logical = _inode_map(candidates)
     hash_count = sum(
         1 for candidate in candidates if candidate.entry_type is EntryType.FILE
@@ -290,7 +352,7 @@ def _build_records(candidates: list[_Candidate]) -> list[ManifestRecord]:
         logical_path = _logical_path_for(item, inode_to_logical)
         if item.entry_type is EntryType.FILE:
             hash_index += 1
-            digest = _hash_file(item, hash_index, hash_count)
+            digest = _hash_file(item, hash_index, hash_count, issues)
             record: ManifestRecord = FileRecord(
                 schema_version=SCHEMA_VERSION,
                 side=item.side,
@@ -321,12 +383,16 @@ def scan_trees(
     decrypted: Path,
     *,
     limits: ScanLimits | None = None,
-) -> list[ManifestRecord]:
+) -> ScanResult:
     """Scan both trees, hash files, and map encrypted paths via inode.
 
     Enumeration is deterministic: decrypted files (path-sorted), then encrypted
     files (path-sorted). ``max_files`` applies globally across both sides.
     Depth is counted from root = 0.
+
+    Per-entry I/O errors never abort the scan: unreadable files are recorded
+    with ``sha256: null`` and every failure is collected in
+    :attr:`ScanResult.issues`.
     """
     limits = limits or ScanLimits()
     if limits.max_depth is not None and limits.max_depth < 0:
@@ -344,22 +410,25 @@ def scan_trees(
         limits.max_files,
     )
 
+    issues: list[ScanIssue] = []
     decrypted_candidates = _iter_candidates(
         decrypted,
         Side.DECRYPTED,
         limits.max_depth,
+        issues,
     )
     encrypted_candidates = _iter_candidates(
         encrypted,
         Side.ENCRYPTED,
         limits.max_depth,
+        issues,
     )
 
     combined = _apply_file_limit(
         decrypted_candidates + encrypted_candidates,
         limits.max_files,
     )
-    records = _build_records(combined)
+    records = _build_records(combined, issues)
 
     mapped = sum(
         1 for record in records if record.side is Side.ENCRYPTED and record.logical_path
@@ -370,9 +439,11 @@ def scan_trees(
         if record.side is Side.ENCRYPTED and record.logical_path is None
     )
     _LOG.info(
-        "scan complete: %d records (mapped_encrypted=%d unmatched_encrypted=%d)",
+        "scan complete: %d records (mapped_encrypted=%d unmatched_encrypted=%d "
+        "unreadable=%d)",
         len(records),
         mapped,
         unmatched,
+        len(issues),
     )
-    return records
+    return ScanResult(records=records, issues=issues)

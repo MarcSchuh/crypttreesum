@@ -12,9 +12,28 @@ from crypttreesum.exceptions import CryptTreeSumError
 from crypttreesum.logutil import configure_logging, get_logger
 from crypttreesum.manifest import read_manifest, write_manifest
 from crypttreesum.models import EntryType, Side
-from crypttreesum.scan import ScanLimits, scan_trees
+from crypttreesum.scan import ScanIssue, ScanLimits, scan_trees
 
 _LOG = get_logger("cli")
+
+
+def _log_scan_issues(issues: list[ScanIssue]) -> None:
+    if not issues:
+        return
+    _LOG.warning("%d entries could not be read:", len(issues))
+    for issue in issues:
+        detail = (
+            "recorded without checksum"
+            if issue.operation == "hash"
+            else "skipped, not in manifest"
+        )
+        _LOG.warning(
+            "  [%s] %s: %s (%s)",
+            issue.side.value,
+            issue.path,
+            issue.message,
+            detail,
+        )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -98,7 +117,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         max_depth=args.max_depth,
         max_files=args.max_files,
     )
-    records = scan_trees(args.encrypted, args.decrypted, limits=limits)
+    result = scan_trees(args.encrypted, args.decrypted, limits=limits)
+    records = result.records
     write_manifest(args.output, records)
 
     mapped = sum(1 for r in records if r.side is Side.ENCRYPTED and r.logical_path)
@@ -114,7 +134,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     _LOG.info(
         "wrote %d records to %s "
         "(decrypted=%d, encrypted=%d, directories=%d, mapped=%d, "
-        "unmatched_encrypted=%d)",
+        "unmatched_encrypted=%d, unreadable=%d)",
         len(records),
         args.output,
         decrypted,
@@ -122,7 +142,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         directories,
         mapped,
         unmatched,
+        len(result.issues),
     )
+    _log_scan_issues(result.issues)
     return 0
 
 
