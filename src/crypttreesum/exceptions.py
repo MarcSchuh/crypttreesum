@@ -11,7 +11,3 @@ class ScanError(CryptTreeSumError):
 
 class ManifestError(CryptTreeSumError):
     """Raised when a manifest cannot be read or written."""
-
-
-class DiffError(CryptTreeSumError):
-    """Raised when a diff cannot be computed."""

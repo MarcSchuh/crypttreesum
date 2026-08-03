@@ -106,7 +106,7 @@ def test_cli_diff_detects_change(tmp_path: Path, capsys) -> None:
     assert "hash mismatch" in captured.out
 
 
-def test_cli_scan_includes_directories_on_request(tmp_path: Path) -> None:
+def test_cli_scan_includes_directories(tmp_path: Path) -> None:
     decrypted = tmp_path / "decrypted"
     encrypted = tmp_path / "encrypted"
     (decrypted / "empty").mkdir(parents=True)
@@ -121,7 +121,6 @@ def test_cli_scan_includes_directories_on_request(tmp_path: Path) -> None:
                 str(encrypted),
                 "--decrypted",
                 str(decrypted),
-                "--include-directories",
                 "-o",
                 str(output),
             ],

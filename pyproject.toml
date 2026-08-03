@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "crypttreesum"
-version = "0.3.0"
+version = "1.0.0"
 description = "Standalone CLI to inventory gocryptfs encrypted/decrypted trees and verify sync integrity via SHA-256"
 readme = "README.md"
 license = {text = "Apache-2.0"}
