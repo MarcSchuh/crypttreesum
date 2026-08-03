@@ -4,18 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from crypttreesum.models import FileRecord
+from crypttreesum.logutil import get_logger
+from crypttreesum.models import FileRecord, ManifestRecord
+
+_LOG = get_logger("diff")
 
 
 @dataclass(slots=True)
 class DiffReport:
     """Detailed differences between two manifests."""
 
-    missing_in_b: list[FileRecord] = field(default_factory=list)
-    extra_in_b: list[FileRecord] = field(default_factory=list)
-    hash_mismatch: list[tuple[FileRecord, FileRecord]] = field(default_factory=list)
-    path_mismatch: list[tuple[FileRecord, FileRecord]] = field(default_factory=list)
-    size_mismatch: list[tuple[FileRecord, FileRecord]] = field(default_factory=list)
+    missing_in_b: list[ManifestRecord] = field(default_factory=list)
+    extra_in_b: list[ManifestRecord] = field(default_factory=list)
+    hash_mismatch: list[tuple[ManifestRecord, ManifestRecord]] = field(
+        default_factory=list,
+    )
+    path_mismatch: list[tuple[ManifestRecord, ManifestRecord]] = field(
+        default_factory=list,
+    )
+    size_mismatch: list[tuple[ManifestRecord, ManifestRecord]] = field(
+        default_factory=list,
+    )
 
     @property
     def ok(self) -> bool:
@@ -39,8 +48,10 @@ class DiffReport:
         }
 
 
-def _index_by_identity(records: list[FileRecord]) -> dict[tuple[str, str], FileRecord]:
-    indexed: dict[tuple[str, str], FileRecord] = {}
+def _index_by_identity(
+    records: list[ManifestRecord],
+) -> dict[tuple[str, str, str], ManifestRecord]:
+    indexed: dict[tuple[str, str, str], ManifestRecord] = {}
     for record in records:
         key = record.identity_key()
         if key in indexed:
@@ -50,8 +61,8 @@ def _index_by_identity(records: list[FileRecord]) -> dict[tuple[str, str], FileR
 
 
 def diff_manifests(
-    records_a: list[FileRecord],
-    records_b: list[FileRecord],
+    records_a: list[ManifestRecord],
+    records_b: list[ManifestRecord],
 ) -> DiffReport:
     """Diff two manifests.
 
@@ -59,8 +70,18 @@ def diff_manifests(
     for unmatched encrypted metadata. SHA-256 equality is the primary integrity
     check across sync hosts.
     """
+    _LOG.info(
+        "diffing manifests: %d records (a) vs %d records (b)",
+        len(records_a),
+        len(records_b),
+    )
     index_a = _index_by_identity(records_a)
     index_b = _index_by_identity(records_b)
+    _LOG.debug(
+        "indexed identities: a=%d b=%d",
+        len(index_a),
+        len(index_b),
+    )
 
     report = DiffReport()
 
@@ -69,33 +90,44 @@ def diff_manifests(
         if rec_b is None:
             report.missing_in_b.append(rec_a)
             continue
-        if rec_a.sha256 != rec_b.sha256:
+        if (
+            isinstance(rec_a, FileRecord)
+            and isinstance(rec_b, FileRecord)
+            and rec_a.sha256 != rec_b.sha256
+        ):
             report.hash_mismatch.append((rec_a, rec_b))
         if rec_a.path != rec_b.path:
             report.path_mismatch.append((rec_a, rec_b))
-        if rec_a.size != rec_b.size:
+        if isinstance(rec_a, FileRecord) and rec_a.size != rec_b.size:
             report.size_mismatch.append((rec_a, rec_b))
 
     for key, rec_b in sorted(index_b.items()):
         if key not in index_a:
             report.extra_in_b.append(rec_b)
 
+    counts = report.summary_counts()
+    _LOG.info(
+        "diff complete: result=%s %s",
+        "OK" if report.ok else "DIFF",
+        ", ".join(f"{name}={count}" for name, count in counts.items()),
+    )
     return report
 
 
-def _fmt_record(record: FileRecord) -> str:
+def _fmt_record(record: ManifestRecord) -> str:
     logical = record.logical_path if record.logical_path is not None else "-"
+    digest = record.sha256 if isinstance(record, FileRecord) else "-"
     return (
-        f"side={record.side.value} path={record.path} "
+        f"type={record.entry_type.value} side={record.side.value} path={record.path} "
         f"logical_path={logical} inode={record.inode} "
-        f"sha256={record.sha256} size={record.size}"
+        f"sha256={digest} size={record.size}"
     )
 
 
 def _append_pair_section(
     lines: list[str],
     title: str,
-    pairs: list[tuple[FileRecord, FileRecord]],
+    pairs: list[tuple[ManifestRecord, ManifestRecord]],
 ) -> None:
     if not pairs:
         return

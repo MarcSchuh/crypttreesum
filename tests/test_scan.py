@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from crypttreesum.exceptions import ScanError
-from crypttreesum.models import Side
+from crypttreesum.models import EntryType, FolderRecord, Side
 from crypttreesum.scan import ScanLimits, scan_trees
 
 
@@ -94,3 +94,39 @@ def test_max_files_global_deterministic(tmp_path: Path) -> None:
 def test_scan_rejects_missing_root(tmp_path: Path) -> None:
     with pytest.raises(ScanError, match="not a directory"):
         scan_trees(tmp_path / "missing", tmp_path)
+
+
+def test_directories_are_optional_and_have_no_hash(tmp_path: Path) -> None:
+    decrypted = tmp_path / "decrypted"
+    encrypted = tmp_path / "encrypted"
+    (decrypted / "empty" / "nested").mkdir(parents=True)
+    encrypted.mkdir()
+
+    without_directories = scan_trees(encrypted, decrypted)
+    assert without_directories == []
+
+    records = scan_trees(
+        encrypted,
+        decrypted,
+        limits=ScanLimits(include_directories=True),
+    )
+    assert [record.path for record in records] == ["empty", "empty/nested"]
+    assert all(isinstance(record, FolderRecord) for record in records)
+    assert all(record.entry_type is EntryType.DIRECTORY for record in records)
+    assert all(not hasattr(record, "sha256") for record in records)
+
+
+def test_max_files_does_not_count_directories(tmp_path: Path) -> None:
+    decrypted = tmp_path / "decrypted"
+    encrypted = tmp_path / "encrypted"
+    (decrypted / "folder").mkdir(parents=True)
+    (decrypted / "folder" / "a.txt").write_text("a", encoding="utf-8")
+    (decrypted / "folder" / "b.txt").write_text("b", encoding="utf-8")
+    encrypted.mkdir()
+
+    records = scan_trees(
+        encrypted,
+        decrypted,
+        limits=ScanLimits(max_files=1, include_directories=True),
+    )
+    assert [record.path for record in records] == ["folder", "folder/a.txt"]

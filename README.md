@@ -22,9 +22,14 @@ crypttreesum scan \
   --encrypted ./encrypted \
   --decrypted ./decrypted \
   -o sample.jsonl \
+  --include-directories \
   --max-depth 1 \
   --max-files 50
 ```
+
+`--include-directories` adds directory records to the manifest with
+`entry_type: "directory"`. Directory records have no `sha256` field. The root
+directories themselves are not included.
 
 ### Diff
 
