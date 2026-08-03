@@ -30,9 +30,14 @@ Directory records (`entry_type: "directory"`) are always included and have no
 `sha256` field. The root directories themselves are not included.
 `--max-files` limits hashed files only, not directory entries.
 
-**Breaking (1.0.0):** `--include-directories` was removed; directory records are
-always emitted. Manifests from older versions without directory records will
-diff as missing/extra directories against new scans.
+Unreadable files (e.g. I/O errors while hashing) do **not** abort the scan.
+They are written with `"sha256": null`, the scan continues, and every failure
+is listed once more at the end. Exit code stays `0` as long as the manifest
+could be written. `diff` reports such pairs as `unverified` instead of a
+hash mismatch.
+
+**Breaking (2.0.0):** file records may carry `"sha256": null`; `scan_trees`
+returns a `ScanResult` (`records` + `issues`) instead of a bare list.
 
 ### Diff
 
@@ -46,4 +51,4 @@ Exit code `0` means match; `1` means differences; `2` means error.
 
 ## Manifest
 
-JSONL, one record per file per side. Encrypted entries are mapped to cleartext paths via matching inode numbers (`ls -i`). Unmatched encrypted metadata (`gocryptfs.conf`, `gocryptfs.diriv`, …) keep `logical_path: null`.
+JSONL, one record per file/directory per side. Encrypted entries are mapped to cleartext paths via matching inode numbers (`ls -i`). Unmatched encrypted metadata (`gocryptfs.conf`, `gocryptfs.diriv`, …) keep `logical_path: null`. Unreadable files keep `sha256: null`.

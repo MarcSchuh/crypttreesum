@@ -11,7 +11,7 @@ def _rec(
     side: Side = Side.DECRYPTED,
     path: str = "a.txt",
     logical_path: str | None = "a.txt",
-    sha256: str = "aaa",
+    sha256: str | None = "aaa",
     size: int = 1,
     inode: int = 1,
 ) -> FileRecord:
@@ -75,6 +75,19 @@ def test_hash_mismatch_and_missing() -> None:
     assert "hash mismatch" in text
     assert "missing in b.jsonl" in text
     assert "DIFF" in text
+
+
+def test_unverified_when_checksum_missing() -> None:
+    a = [_rec(sha256=None)]
+    b = [_rec(sha256="aaa")]
+    report = diff_manifests(a, b)
+    assert not report.ok
+    assert report.hash_mismatch == []
+    assert len(report.unverified) == 1
+
+    text = format_diff_report(report, label_a="a.jsonl", label_b="b.jsonl")
+    assert "unverified" in text
+    assert "sha256=-" in text
 
 
 def test_duplicate_identity_keeps_first_and_warns(caplog) -> None:

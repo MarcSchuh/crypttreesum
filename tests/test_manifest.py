@@ -48,6 +48,12 @@ def test_roundtrip(tmp_path: Path) -> None:
             inode=99,
             sha256="meta",
         ),
+        _record(
+            path="unreadable.vob",
+            logical_path="unreadable.vob",
+            inode=101,
+            sha256=None,
+        ),
         FolderRecord(
             schema_version=SCHEMA_VERSION,
             side=Side.DECRYPTED,

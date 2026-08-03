@@ -19,6 +19,9 @@ class DiffReport:
     hash_mismatch: list[tuple[ManifestRecord, ManifestRecord]] = field(
         default_factory=list,
     )
+    unverified: list[tuple[ManifestRecord, ManifestRecord]] = field(
+        default_factory=list,
+    )
     path_mismatch: list[tuple[ManifestRecord, ManifestRecord]] = field(
         default_factory=list,
     )
@@ -28,11 +31,12 @@ class DiffReport:
 
     @property
     def ok(self) -> bool:
-        """True when no differences were found."""
+        """True when no differences were found and every pair was verifiable."""
         return not (
             self.missing_in_b
             or self.extra_in_b
             or self.hash_mismatch
+            or self.unverified
             or self.path_mismatch
             or self.size_mismatch
         )
@@ -43,6 +47,7 @@ class DiffReport:
             "missing_in_b": len(self.missing_in_b),
             "extra_in_b": len(self.extra_in_b),
             "hash_mismatch": len(self.hash_mismatch),
+            "unverified": len(self.unverified),
             "path_mismatch": len(self.path_mismatch),
             "size_mismatch": len(self.size_mismatch),
         }
@@ -65,6 +70,22 @@ def _index_by_identity(
     return indexed
 
 
+def _compare_pair(
+    report: DiffReport,
+    rec_a: ManifestRecord,
+    rec_b: ManifestRecord,
+) -> None:
+    if isinstance(rec_a, FileRecord) and isinstance(rec_b, FileRecord):
+        if rec_a.sha256 is None or rec_b.sha256 is None:
+            report.unverified.append((rec_a, rec_b))
+        elif rec_a.sha256 != rec_b.sha256:
+            report.hash_mismatch.append((rec_a, rec_b))
+        if rec_a.size != rec_b.size:
+            report.size_mismatch.append((rec_a, rec_b))
+    if rec_a.path != rec_b.path:
+        report.path_mismatch.append((rec_a, rec_b))
+
+
 def diff_manifests(
     records_a: list[ManifestRecord],
     records_b: list[ManifestRecord],
@@ -73,7 +94,8 @@ def diff_manifests(
 
     Identity is ``(side, entry_type, logical_path)`` when mapped, otherwise
     ``(side, entry_type, path)`` for unmatched encrypted metadata. SHA-256
-    equality is the primary integrity check across sync hosts.
+    equality is the primary integrity check across sync hosts; pairs where
+    either side has no digest are reported as ``unverified`` instead.
     """
     _LOG.info(
         "diffing manifests: %d records (a) vs %d records (b)",
@@ -95,16 +117,7 @@ def diff_manifests(
         if rec_b is None:
             report.missing_in_b.append(rec_a)
             continue
-        if (
-            isinstance(rec_a, FileRecord)
-            and isinstance(rec_b, FileRecord)
-            and rec_a.sha256 != rec_b.sha256
-        ):
-            report.hash_mismatch.append((rec_a, rec_b))
-        if rec_a.path != rec_b.path:
-            report.path_mismatch.append((rec_a, rec_b))
-        if isinstance(rec_a, FileRecord) and rec_a.size != rec_b.size:
-            report.size_mismatch.append((rec_a, rec_b))
+        _compare_pair(report, rec_a, rec_b)
 
     for key, rec_b in sorted(index_b.items()):
         if key not in index_a:
@@ -121,7 +134,9 @@ def diff_manifests(
 
 def _fmt_record(record: ManifestRecord) -> str:
     logical = record.logical_path if record.logical_path is not None else "-"
-    digest = record.sha256 if isinstance(record, FileRecord) else "-"
+    digest = "-"
+    if isinstance(record, FileRecord) and record.sha256 is not None:
+        digest = record.sha256
     return (
         f"type={record.entry_type.value} side={record.side.value} path={record.path} "
         f"logical_path={logical} inode={record.inode} "
@@ -165,6 +180,11 @@ def format_diff_report(report: DiffReport, *, label_a: str, label_b: str) -> str
         lines.extend(f"  + {_fmt_record(record)}" for record in report.extra_in_b)
 
     _append_pair_section(lines, "hash mismatch", report.hash_mismatch)
+    _append_pair_section(
+        lines,
+        "unverified (no checksum on at least one side)",
+        report.unverified,
+    )
     _append_pair_section(
         lines,
         "path mismatch (same identity, different side path)",

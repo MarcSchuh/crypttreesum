@@ -57,9 +57,13 @@ class RecordBase:
 
 @dataclass(frozen=True, slots=True)
 class FileRecord(RecordBase):
-    """A file manifest record with a required SHA-256 digest."""
+    """A file manifest record.
 
-    sha256: str
+    ``sha256`` is ``None`` when the content could not be read during the scan;
+    such a record documents the file's existence but not its integrity.
+    """
+
+    sha256: str | None
     entry_type: ClassVar[EntryType] = EntryType.FILE
 
 
@@ -91,7 +95,7 @@ def record_from_dict(data: dict[str, Any]) -> ManifestRecord:
         return FolderRecord(**common)  # type: ignore[arg-type]
 
     digest = data["sha256"]
-    if not isinstance(digest, str):
-        msg = "file record sha256 must be a string"
+    if digest is not None and not isinstance(digest, str):
+        msg = "file record sha256 must be a string or null"
         raise TypeError(msg)
     return FileRecord(**common, sha256=digest)  # type: ignore[arg-type]
