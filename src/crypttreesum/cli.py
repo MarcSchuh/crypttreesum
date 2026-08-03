@@ -9,8 +9,12 @@ from pathlib import Path
 from crypttreesum import __version__
 from crypttreesum.diff import diff_manifests, format_diff_report
 from crypttreesum.exceptions import CryptTreeSumError
+from crypttreesum.logutil import configure_logging, get_logger
 from crypttreesum.manifest import read_manifest, write_manifest
+from crypttreesum.models import EntryType, Side
 from crypttreesum.scan import ScanLimits, scan_trees
+
+_LOG = get_logger("cli")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -25,6 +29,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
+    )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Enable debug logging (repeatable)",
+    )
+    verbosity.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Only show warnings and errors",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -64,6 +82,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Global maximum number of files to hash (testrun)",
     )
+    scan.add_argument(
+        "--include-directories",
+        action="store_true",
+        help="Include directory records without SHA-256 hashes",
+    )
 
     diff = subparsers.add_parser(
         "diff",
@@ -76,22 +99,35 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    limits = ScanLimits(max_depth=args.max_depth, max_files=args.max_files)
+    limits = ScanLimits(
+        max_depth=args.max_depth,
+        max_files=args.max_files,
+        include_directories=args.include_directories,
+    )
     records = scan_trees(args.encrypted, args.decrypted, limits=limits)
     write_manifest(args.output, records)
 
-    mapped = sum(1 for r in records if r.side.value == "encrypted" and r.logical_path)
+    mapped = sum(1 for r in records if r.side is Side.ENCRYPTED and r.logical_path)
     unmatched = sum(
-        1 for r in records if r.side.value == "encrypted" and r.logical_path is None
+        1 for r in records if r.side is Side.ENCRYPTED and r.logical_path is None
     )
-    decrypted = sum(1 for r in records if r.side.value == "decrypted")
-    encrypted = sum(1 for r in records if r.side.value == "encrypted")
+    decrypted = sum(1 for r in records if r.side is Side.DECRYPTED)
+    encrypted = sum(1 for r in records if r.side is Side.ENCRYPTED)
+    directories = sum(
+        1 for record in records if record.entry_type is EntryType.DIRECTORY
+    )
 
-    print(
-        f"wrote {len(records)} records to {args.output} "
-        f"(decrypted={decrypted}, encrypted={encrypted}, "
-        f"mapped={mapped}, unmatched_encrypted={unmatched})",
-        file=sys.stderr,
+    _LOG.info(
+        "wrote %d records to %s "
+        "(decrypted=%d, encrypted=%d, directories=%d, mapped=%d, "
+        "unmatched_encrypted=%d)",
+        len(records),
+        args.output,
+        decrypted,
+        encrypted,
+        directories,
+        mapped,
+        unmatched,
     )
     return 0
 
@@ -114,13 +150,14 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+    configure_logging(verbosity=args.verbose, quiet=args.quiet)
     try:
         if args.command == "scan":
             return _cmd_scan(args)
         if args.command == "diff":
             return _cmd_diff(args)
     except CryptTreeSumError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _LOG.error("%s", exc)
         return 2
 
     parser.error(f"unknown command: {args.command}")

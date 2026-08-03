@@ -7,6 +7,7 @@ from pathlib import Path
 
 from crypttreesum.cli import main
 from crypttreesum.manifest import read_manifest
+from crypttreesum.models import EntryType, FolderRecord
 
 
 def test_cli_scan_and_diff(tmp_path: Path) -> None:
@@ -103,3 +104,32 @@ def test_cli_diff_detects_change(tmp_path: Path, capsys) -> None:
     assert main(["diff", str(out_a), str(out_b)]) == 1
     captured = capsys.readouterr()
     assert "hash mismatch" in captured.out
+
+
+def test_cli_scan_includes_directories_on_request(tmp_path: Path) -> None:
+    decrypted = tmp_path / "decrypted"
+    encrypted = tmp_path / "encrypted"
+    (decrypted / "empty").mkdir(parents=True)
+    encrypted.mkdir()
+    output = tmp_path / "manifest.jsonl"
+
+    assert (
+        main(
+            [
+                "scan",
+                "--encrypted",
+                str(encrypted),
+                "--decrypted",
+                str(decrypted),
+                "--include-directories",
+                "-o",
+                str(output),
+            ],
+        )
+        == 0
+    )
+
+    [record] = read_manifest(output)
+    assert isinstance(record, FolderRecord)
+    assert record.entry_type is EntryType.DIRECTORY
+    assert not hasattr(record, "sha256")
