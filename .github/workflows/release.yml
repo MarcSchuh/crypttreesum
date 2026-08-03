@@ -1,0 +1,108 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.13"
+  UV_VERSION: "0.7.12"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            .uv/cache
+          key: ${{ runner.os }}-uv-${{ hashFiles('**/uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Extract version from pyproject.toml
+        id: get-version
+        run: |
+          VERSION=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: $VERSION"
+
+      - name: Build executable
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build_crypttreesum.sh
+
+      - name: Verify build
+        run: |
+          ls -lh dist/
+          if [ ! -f "dist/crypttreesum" ]; then
+            echo "Missing executable: dist/crypttreesum"
+            exit 1
+          fi
+
+      - name: Create release tag if it doesn't exist
+        id: create-tag
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          TAG="v${VERSION}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping tag creation"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Creating new tag: $TAG"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.create-tag.outputs.tag }}
+          name: Release ${{ steps.create-tag.outputs.tag }}
+          body: |
+            ## Release ${{ steps.create-tag.outputs.tag }}
+
+            Standalone executable:
+            - `crypttreesum` — scan gocryptfs trees and verify sync via SHA-256 manifests
+
+            ### Installation
+            ```bash
+            chmod +x crypttreesum
+            ./crypttreesum --help
+            ```
+          files: |
+            dist/crypttreesum
+          draft: false
+          prerelease: false
