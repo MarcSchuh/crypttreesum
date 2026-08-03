@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crypttreesum"
+version = "0.1.0"
+description = "Standalone CLI to inventory gocryptfs encrypted/decrypted trees and verify sync integrity via SHA-256"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.13"
+authors = [
+    {name = "Marc Schuh"},
+]
+keywords = ["gocryptfs", "sha256", "sync", "verification", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Archiving",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.5.0",
+    "bandit>=1.7.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.3.0",
+    "types-setuptools",
+    "pip-audit>=1.0.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/MarcSchuh/crypttreesum"
+Repository = "https://github.com/MarcSchuh/crypttreesum"
+"Bug Tracker" = "https://github.com/MarcSchuh/crypttreesum/issues"
+
+[project.scripts]
+crypttreesum = "crypttreesum.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crypttreesum"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "E501",
+    "G004",
+    "D203",
+    "D213",
+    "D400",
+    "D415",
+    "FBT001",
+    "FBT002",
+    "CPY001",
+    "TC001",
+    "TC002",
+    "TC003",
+    "COM812",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"src/crypttreesum/cli.py" = ["T201"]
+"tests/**/*" = [
+    "S101",
+    "S105",
+    "S106",
+    "S108",
+    "PLR0913",
+    "ANN001",
+    "ANN003",
+    "PLR2004",
+    "SIM117",
+    "ARG001",
+    "ARG002",
+    "SLF001",
+    "D100",
+    "D103",
+    "D104",
+]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+show_error_codes = true
+explicit_package_bases = true
+namespace_packages = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*_test.py", "test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--cov=src/crypttreesum",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
